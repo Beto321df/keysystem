@@ -34,7 +34,6 @@ const linkRequirements={6:1,12:2,24:3,30:4};
 const SESSION_KEY='znexus_server_session_v5';
 const ACTIVE_KEY='znexus_active_key_v3';
 const ACTIVE_EXPIRES='znexus_expires_at_v3';
-const DEVICE_KEY='znexus_device_id_v2';
 let deviceId='',timerInterval=null,isGeneratingKey=false,verifyInFlight=false,initDone=false,apiHealthy=false;
 
 function safeErrorMessage(v,f='Error desconocido.'){
@@ -59,13 +58,12 @@ async function api(path,o={}){
 }
 
 async function hwid(){
-  const a=[navigator.hardwareConcurrency||'unknown',navigator.deviceMemory||'unknown',navigator.platform||'unknown',`${screen.width}x${screen.height}x${screen.colorDepth}`,Intl.DateTimeFormat().resolvedOptions().timeZone||'unknown',navigator.language||'unknown',navigator.maxTouchPoints||0];
-  try{
-    const x=document.createElement('canvas'),g=x.getContext('webgl')||x.getContext('experimental-webgl'),d=g&&g.getExtension('WEBGL_debug_renderer_info');
-    if(d)a.push(g.getParameter(d.UNMASKED_VENDOR_WEBGL),g.getParameter(d.UNMASKED_RENDERER_WEBGL));
-  }catch{}
-  const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(a.join('|')));
-  return 'HWID-'+Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,'0')).join('').slice(0,24).toUpperCase();
+  try{const saved=localStorage.getItem('znexus_device_id_v1');if(/^HWID-[A-Z0-9]{24}$/.test(saved||''))return saved}catch{}
+  const a=[navigator.hardwareConcurrency||'unknown',navigator.deviceMemory||'unknown',navigator.platform||'unknown',`${screen.width}x${screen.height}x${screen.colorDepth}`,Intl.DateTimeFormat().resolvedOptions().timeZone||'unknown'];
+  try{const x=document.createElement('canvas'),g=x.getContext('webgl')||x.getContext('experimental-webgl'),d=g&&g.getExtension('WEBGL_debug_renderer_info');if(d)a.push(g.getParameter(d.UNMASKED_VENDOR_WEBGL),g.getParameter(d.UNMASKED_RENDERER_WEBGL))}catch{}
+  const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(a.join('|'))),id='HWID-'+Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,'0')).join('').slice(0,24).toUpperCase();
+  try{localStorage.setItem('znexus_device_id_v1',id)}catch{}
+  return id;
 }
 
 function getSession(){try{const x=localStorage.getItem(SESSION_KEY);return x?JSON.parse(x):null}catch{return null}}
@@ -157,13 +155,16 @@ function showKey(k,exp){
 }
 
 async function recoverKey(){
-  const cached=readKey();
-  if(cached){showKey(cached.k,cached.exp);return true}
   try{
     const d=await api(`/api/key/recover?deviceId=${encodeURIComponent(deviceId)}`,{timeout:8000});
     if(d.found){showKey(d.key,Number(d.expiresAt));return true}
+    clearKey();
     return false;
-  }catch{return false}
+  }catch{
+    const cached=readKey();
+    if(cached){showKey(cached.k,cached.exp);return true}
+    return false;
+  }
 }
 
 async function init(){
@@ -187,7 +188,6 @@ window.addEventListener('pageshow',async()=>{
 });
 
 window.addEventListener('online',async()=>{if(initDone&&apiHealthy)await recoverKey()});
-
 init();
 </script>
 </body>
