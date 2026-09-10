@@ -876,10 +876,24 @@ VerifyBtn.MouseButton1Click:Connect(function()
 
             else
 
+                -- DIAGNÓSTICO TEMPORAL:
+                -- Si el backend devuelve un motivo distinto de los conocidos,
+                -- mostramos el reason real y el HWID que está enviando Roblox.
+                local reason = tostring(data.reason or "unknown")
+
+                warn(
+                    "[Z NEXUS DEBUG] Key inválida | reason=",
+                    reason,
+                    "| hwid=",
+                    tostring(deviceId),
+                    "| key=",
+                    tostring(userKey)
+                )
+
                 updateStatus(
-                    "Key inválida",
+                    "Key inválida | " .. reason,
                     Color3.fromRGB(239, 68, 68),
-                    3
+                    4
                 )
 
             end
