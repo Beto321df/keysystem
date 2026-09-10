@@ -6,7 +6,7 @@ const VERIFY_LOCK_TTL=7000;
 const VERIFY_RETRIES=45;
 const VERIFY_RETRY_DELAY=300;
 const KEY_PREFIX='ZNEXUS-';
-const AD_PROVIDER_BASE_URL=process.env.AD_PROVIDER_BASE_URL||'https://link-hub.net/6768455/qSE1FKce4SS7';
+const AD_PROVIDER_BASE_URL=process.env.AD_PROVIDER_BASE_URL||'https://link-hub.net/6768455/XHZ48dyFzfQL';
 const recentRequests=new Map();
 function json(res,status,payload){res.status(status);res.setHeader('Content-Type','application/json; charset=utf-8');res.setHeader('Cache-Control','no-store, no-cache, must-revalidate');res.setHeader('X-Content-Type-Options','nosniff');res.end(JSON.stringify(payload));}
 function routeOf(req){return new URL(req.url||'/','https://placeholder.local').pathname.replace(/^\/api\/?/,'').replace(/^\/+|\/+$/g,'');}
