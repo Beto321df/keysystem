@@ -48,15 +48,25 @@ local folderName = "KeyAnime"
 -- HWID
 -- =========================================================
 
+-- El backend trabaja con HWID- + 24 caracteres. Roblox
+-- GetClientId() devuelve normalmente un identificador hexadecimal
+-- sin ese prefijo, por lo que debemos normalizarlo ANTES de:
+-- 1) generar la URL de obtención de key
+-- 2) crear/consultar la sesión
+-- 3) validar la key.
 local deviceId = ""
 
 pcall(function()
-    deviceId = tostring(RbxAnalyticsService:GetClientId() or "")
-end)
+    local raw = tostring(RbxAnalyticsService:GetClientId() or "")
+    raw = raw:upper()
 
-if deviceId == "nil" then
-    deviceId = ""
-end
+    -- Conservamos solamente caracteres hexadecimales.
+    local clean = raw:gsub("[^A-F0-9]", "")
+
+    if #clean >= 24 then
+        deviceId = "HWID-" .. clean:sub(1, 24)
+    end
+end)
 
 -- =========================================================
 -- HELPERS
@@ -75,7 +85,7 @@ local function urlEncode(value)
 end
 
 -- IMPORTANTE:
--- La URL lleva el MISMO HWID que se utiliza posteriormente
+-- La URL lleva el MISMO HWID normalizado que se utiliza posteriormente
 -- para validar la key.
 local KEY_WEBSITE_URL =
     WEBSITE_URL .. "?hwid=" .. urlEncode(deviceId)
