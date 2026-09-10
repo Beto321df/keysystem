@@ -13,7 +13,7 @@ function routeOf(req){return new URL(req.url||'/','https://placeholder.local').p
 function queryOf(req){return new URL(req.url||'/','https://placeholder.local').searchParams;}
 function ipOf(req){return String(req.headers?.['x-forwarded-for']||req.headers?.['x-real-ip']||'unknown').split(',')[0].trim().slice(0,80);}
 function rateLimit(req,key,max=40,windowMs=60000){const now=Date.now(),id=`${key}:${ipOf(req)}`,x=recentRequests.get(id)||{count:0,reset:now+windowMs};if(now>x.reset){x.count=0;x.reset=now+windowMs}x.count++;recentRequests.set(id,x);if(recentRequests.size>5000)for(const[k,v]of recentRequests)if(v.reset<now)recentRequests.delete(k);return x.count<=max;}
-function app(){if(admin.apps.length)return admin.app();const raw=process.env.FIREBASE_SERVICE_ACCOUNT_JSON,url=process.env.FIREBASE_DATABASE_URL;if(!raw||!url)throw new Error('Firebase del servidor no está configurado.');return admin.initializeApp({credential:admin.credential.cert(JSON.parse(raw)),databaseURL:url});}
+function app(){if(admin.apps.length)return admin.app();const raw=process.env.FIREBASE_SERVICE_ACCOUNT_JSONZ,url=process.env.FIREBASE_DATABASE_URL;if(!raw||!url)throw new Error('Firebase del servidor no está configurado.');return admin.initializeApp({credential:admin.credential.cert(JSON.parse(raw)),databaseURL:url});}
 function validDevice(id){return /^HWID-[A-Z0-9]{24}$/.test(String(id||''));}
 function pub(s){return{id:s.id,dur:Number(s.dur),link:Number(s.link),state:s.state,createdAt:Number(s.createdAt),expiresAt:Number(s.expiresAt)};}
 async function body(req){return req.body&&typeof req.body==='object'?req.body:{};}
