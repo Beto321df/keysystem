@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const admin = require('firebase-admin');
 
 const REQUIREMENTS = { 6: 1, 12: 2, 24: 3, 30: 4 };
-const MIN_TOTAL_DWELL_MS = 18 * 1000;
+const MIN_DWELL_PER_LINK_MS = 6 * 1000;
 const DEVICE_RE = /^HWID-[A-Z0-9]{24}$/;
 const HOSTNAME = String(process.env.TURNSTILE_HOSTNAME || 'zkeysystem.vercel.app').trim().toLowerCase();
 
@@ -50,7 +50,8 @@ module.exports=async(req,res)=>{try{
 
   const now=Date.now(),stepStart=Number(s.externalStartedAt||0),stepElapsed=stepStart?Math.max(0,now-stepStart):0,totalDwell=Number(s.totalExternalMs||0)+stepElapsed;
   if(!stepStart)return json(res,403,{error:'No se detectó el inicio del paso.'});
-  if(totalDwell<MIN_TOTAL_DWELL_MS)return json(res,403,{error:`Proceso demasiado rápido. Completa los ${required} anuncio(s) antes de verificar.`,code:'FLOW_TOO_FAST'});
+  const minTotal=required*MIN_DWELL_PER_LINK_MS;
+  if(totalDwell<minTotal)return json(res,403,{error:`Proceso demasiado rápido. Completa los ${required} anuncio(s) antes de verificar.`,code:'FLOW_TOO_FAST'});
 
   const completed=Math.min(required,Number(s.completedLinks||0)+1),next=Number(s.link)<required?Number(s.link)+1:Number(s.link),state=completed>=required?'complete':'ready';
   if(completed===required)await verifyHuman(turnstileToken,req);
