@@ -9,10 +9,10 @@ const HOSTNAME = String(process.env.TURNSTILE_HOSTNAME || 'zkeysystem.vercel.app
 function json(res,status,payload){res.statusCode=status;res.setHeader('Content-Type','application/json; charset=utf-8');res.setHeader('Cache-Control','no-store, no-cache, must-revalidate');res.setHeader('X-Content-Type-Options','nosniff');res.end(JSON.stringify(payload));}
 function parseServiceAccount(raw){let s=String(raw||'').trim(),c=[s];if((s.startsWith('"')&&s.endsWith('"'))||(s.startsWith("'")&&s.endsWith("'"))){try{const q=s.startsWith('"')?JSON.parse(s):s.slice(1,-1);if(typeof q==='string')c.unshift(q)}catch{}}for(const x of c){try{let o=JSON.parse(x);if(typeof o==='string')o=JSON.parse(o);if(o&&o.project_id&&o.client_email&&o.private_key){o.private_key=String(o.private_key).replace(/\\n/g,'\n');return o}}catch{}}throw new Error('La credencial de Firebase no es válida.');}
 function db(){if(admin.apps.length)return admin.app().database();const raw=process.env.FIREBASE_SERVICE_ACCOUNT_JSONZ||process.env.FIREBASE_SERVICE_ACCOUNT_JSON,url=process.env.FIREBASE_DATABASE_URL;if(!raw||!url)throw new Error('Firebase del servidor no está configurado.');return admin.initializeApp({credential:admin.credential.cert(parseServiceAccount(raw)),databaseURL:url}).database();}
-function cookie(req,name){const raw=String(req.headers?.cookie||'');for(const p of raw.split(';')){const [k,...r]=p.trim().split('=');if(k===name)return r.join('=');}return '';}
+function cookie(req,name){const raw=String(req.headers?.cookie||'');for(const p of raw.split(';')){const [k,...r]=p.trim().split('=');if(k===name)return r.join('=')}return '';}
 function equal(a,b){const x=Buffer.from(String(a||'')),y=Buffer.from(String(b||''));return x.length===y.length&&crypto.timingSafeEqual(x,y)}
 function body(req){if(req.body&&typeof req.body==='object')return Promise.resolve(req.body);return new Promise((resolve,reject)=>{let r='';req.on('data',c=>{r+=c;if(r.length>12000)reject(new Error('Solicitud demasiado grande.'))});req.on('end',()=>{if(!r)return resolve({});try{resolve(JSON.parse(r))}catch{reject(new Error('JSON inválido.'))}});req.on('error',reject)})}
-async function turnstile(token,req){
+async function verifyHuman(token,req){
   const secret=String(process.env.TURNSTILE_SECRET_KEY||'').trim();
   if(!secret)throw Object.assign(new Error('TURNSTILE_SECRET_KEY no está configurada en Vercel.'),{status:500});
   if(!token||token.length>2048)throw Object.assign(new Error('Completa la verificación humana.'),{status:403});
@@ -47,9 +47,10 @@ module.exports=async(req,res)=>{try{
 
   const now=Date.now(),stepStart=Number(s.externalStartedAt||0),stepElapsed=stepStart?Math.max(0,now-stepStart):0,totalDwell=Number(s.totalExternalMs||0)+stepElapsed;
   if(!stepStart)return json(res,403,{error:'No se detectó el inicio del paso.'});
-  if(totalDwell<MIN_TOTAL_DWELL_MS)return json(res,403,{error:'Proceso demasiado rápido. Completa los 3 anuncios y verifica que eres humano.',code:'FLOW_TOO_FAST'});
+  if(totalDwell<MIN_TOTAL_DWELL_MS)return json(res,403,{error:'Proceso demasiado rápido. Completa los 3 anuncios antes de verificar.',code:'FLOW_TOO_FAST'});
 
-  await turnstile(turnstileToken,req);
+  const completed=Math.min(TOTAL_LINKS,Number(s.completedLinks||0)+1),next=Number(s.link)<TOTAL_LINKS?Number(s.link)+1:Number(s.link),state=completed>=TOTAL_LINKS?'complete':'ready';
+  if(completed===TOTAL_LINKS)await verifyHuman(turnstileToken,req);
 
   const latest=await ref.get();
   if(!latest.exists())return json(res,404,{error:'La sesión ya no está disponible.'});
@@ -57,9 +58,7 @@ module.exports=async(req,res)=>{try{
   if(String(s.deviceId||'')!==deviceId||s.state!=='awaiting_external_return'||Number(s.link)!==link||s.verificationUsed===true)return json(res,409,{error:'Ese paso ya fue procesado.'});
   if(!s.ticketHash||!equal(String(s.ticketHash),crypto.createHash('sha256').update(ticket).digest('hex')))return json(res,403,{error:'El pase de navegador ya no es válido.'});
 
-  const completed=Math.min(TOTAL_LINKS,Number(s.completedLinks||0)+1),next=Number(s.link)<TOTAL_LINKS?Number(s.link)+1:Number(s.link),state=completed>=TOTAL_LINKS?'complete':'ready';
-  await ref.update({link:next,completedLinks:completed,totalLinks:TOTAL_LINKS,state,totalExternalMs:totalDwell,lastVerifiedAt:now,lastVerifiedHash:hash,verificationUsed:true,verificationConsumedAt:now,turnstileVerifiedAt:now,ticketHash:null,verificationNonce:null,ticketIssuedAt:null,ticketExpiresAt:null,externalStartedAt:null});
+  await ref.update({link:next,completedLinks:completed,totalLinks:TOTAL_LINKS,state,totalExternalMs:totalDwell,lastVerifiedAt:now,lastVerifiedHash:hash,verificationUsed:true,verificationConsumedAt:now,turnstileVerifiedAt:completed===TOTAL_LINKS?now:null,ticketHash:null,verificationNonce:null,ticketIssuedAt:null,ticketExpiresAt:null,externalStartedAt:null});
   res.setHeader('Set-Cookie','__Host-znexus_ticket=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0');
-  const saved=await ref.get();if(!saved.exists())return json(res,404,{error:'La sesión desapareció después de verificar.'});
-  const v=saved.val();return json(res,200,{session:{id:v.id,dur:Number(v.dur),link:Number(v.link),state:v.state,createdAt:Number(v.createdAt),expiresAt:Number(v.expiresAt)}});
+  return json(res,200,{session:{id:s.id,dur:Number(s.dur),link:next,state,createdAt:Number(s.createdAt),expiresAt:Number(s.expiresAt)}});
 }catch(e){console.error('linkvertise/verify:',e);return json(res,Number(e?.status)||500,{error:e?.name==='AbortError'?'Turnstile tardó demasiado en responder.':(typeof e?.message==='string'?e.message:'Error interno del servidor.')});}};
