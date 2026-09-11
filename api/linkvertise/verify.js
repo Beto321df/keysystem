@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const admin = require('firebase-admin');
 
-const TOTAL_LINKS = 3;
+const REQUIREMENTS = { 6: 1, 12: 2, 24: 3, 30: 4 };
 const MIN_TOTAL_DWELL_MS = 18 * 1000;
 const DEVICE_RE = /^HWID-[A-Z0-9]{24}$/;
 const HOSTNAME = String(process.env.TURNSTILE_HOSTNAME || 'zkeysystem.vercel.app').trim().toLowerCase();
@@ -30,12 +30,15 @@ module.exports=async(req,res)=>{try{
   const x=await body(req),sessionId=String(x.sessionId||'').trim(),hash=String(x.hash||'').trim(),link=Number(x.link),deviceId=String(x.deviceId||'').trim(),turnstileToken=String(x.turnstileToken||'').trim();
   if(!/^[a-f0-9-]{20,100}$/i.test(sessionId))return json(res,400,{error:'Sesión inválida.'});
   if(!/^[A-Za-z0-9]{64}$/.test(hash))return json(res,400,{error:'Comprobante inválido.'});
-  if(!Number.isInteger(link)||link<1||link>TOTAL_LINKS)return json(res,400,{error:'Paso inválido.'});
+  if(!Number.isInteger(link)||link<1||link>4)return json(res,400,{error:'Paso inválido.'});
   if(!DEVICE_RE.test(deviceId))return json(res,400,{error:'Device ID inválido.'});
 
   const ref=db().ref(`sessions/${sessionId}`),snap=await ref.get();
   if(!snap.exists())return json(res,404,{error:'Sesión no encontrada.'});
   let s=snap.val()||{};
+  const required=REQUIREMENTS[Number(s.dur)];
+  if(!required)return json(res,400,{error:'Duración de sesión inválida.'});
+  if(link>required)return json(res,409,{error:'Ese paso no es necesario para esta duración.'});
   if(String(s.deviceId||'')!==deviceId)return json(res,403,{error:'El dispositivo no coincide con la sesión.'});
   if(Number(s.expiresAt||0)<=Date.now()){await ref.remove();return json(res,410,{error:'La sesión expiró.'});}
   if(s.state!=='awaiting_external_return'||Number(s.link)!==link)return json(res,409,{error:'Ese paso no está pendiente.'});
@@ -47,10 +50,10 @@ module.exports=async(req,res)=>{try{
 
   const now=Date.now(),stepStart=Number(s.externalStartedAt||0),stepElapsed=stepStart?Math.max(0,now-stepStart):0,totalDwell=Number(s.totalExternalMs||0)+stepElapsed;
   if(!stepStart)return json(res,403,{error:'No se detectó el inicio del paso.'});
-  if(totalDwell<MIN_TOTAL_DWELL_MS)return json(res,403,{error:'Proceso demasiado rápido. Completa los 3 anuncios antes de verificar.',code:'FLOW_TOO_FAST'});
+  if(totalDwell<MIN_TOTAL_DWELL_MS)return json(res,403,{error:`Proceso demasiado rápido. Completa los ${required} anuncio(s) antes de verificar.`,code:'FLOW_TOO_FAST'});
 
-  const completed=Math.min(TOTAL_LINKS,Number(s.completedLinks||0)+1),next=Number(s.link)<TOTAL_LINKS?Number(s.link)+1:Number(s.link),state=completed>=TOTAL_LINKS?'complete':'ready';
-  if(completed===TOTAL_LINKS)await verifyHuman(turnstileToken,req);
+  const completed=Math.min(required,Number(s.completedLinks||0)+1),next=Number(s.link)<required?Number(s.link)+1:Number(s.link),state=completed>=required?'complete':'ready';
+  if(completed===required)await verifyHuman(turnstileToken,req);
 
   const latest=await ref.get();
   if(!latest.exists())return json(res,404,{error:'La sesión ya no está disponible.'});
@@ -58,7 +61,7 @@ module.exports=async(req,res)=>{try{
   if(String(s.deviceId||'')!==deviceId||s.state!=='awaiting_external_return'||Number(s.link)!==link||s.verificationUsed===true)return json(res,409,{error:'Ese paso ya fue procesado.'});
   if(!s.ticketHash||!equal(String(s.ticketHash),crypto.createHash('sha256').update(ticket).digest('hex')))return json(res,403,{error:'El pase de navegador ya no es válido.'});
 
-  await ref.update({link:next,completedLinks:completed,totalLinks:TOTAL_LINKS,state,totalExternalMs:totalDwell,lastVerifiedAt:now,lastVerifiedHash:hash,verificationUsed:true,verificationConsumedAt:now,turnstileVerifiedAt:completed===TOTAL_LINKS?now:null,ticketHash:null,verificationNonce:null,ticketIssuedAt:null,ticketExpiresAt:null,externalStartedAt:null});
+  await ref.update({link:next,completedLinks:completed,totalLinks:required,state,totalExternalMs:totalDwell,lastVerifiedAt:now,lastVerifiedHash:hash,verificationUsed:true,verificationConsumedAt:now,turnstileVerifiedAt:completed===required?now:null,ticketHash:null,verificationNonce:null,ticketIssuedAt:null,ticketExpiresAt:null,externalStartedAt:null});
   res.setHeader('Set-Cookie','__Host-znexus_ticket=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0');
   return json(res,200,{session:{id:s.id,dur:Number(s.dur),link:next,state,createdAt:Number(s.createdAt),expiresAt:Number(s.expiresAt)}});
 }catch(e){console.error('linkvertise/verify:',e);return json(res,Number(e?.status)||500,{error:e?.name==='AbortError'?'Turnstile tardó demasiado en responder.':(typeof e?.message==='string'?e.message:'Error interno del servidor.')});}};
