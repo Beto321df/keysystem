@@ -1,7 +1,9 @@
+const crypto = require('crypto');
 const admin = require('firebase-admin');
 
 const AD_PROVIDER_BASE_URL = process.env.AD_PROVIDER_BASE_URL || 'https://link-hub.net/6768455/XHZ48dyFzfQL';
 const DEVICE_RE = /^HWID-[A-Z0-9]{24}$/;
+const SESSION_TTL = 15 * 60 * 1000;
 
 function json(res, status, payload) {
   res.statusCode = status;
@@ -36,7 +38,7 @@ function parseServiceAccount(raw) {
 function getDb() {
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSONZ || process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
   const databaseURL = process.env.FIREBASE_DATABASE_URL;
-  if (!raw || !databaseURL) throw new Error('Firebase del servidor no está configurado. Falta FIREBASE_DATABASE_URL o la credencial.');
+  if (!raw || !databaseURL) throw new Error('Firebase del servidor no está configurado.');
   const app = admin.apps.length ? admin.app() : admin.initializeApp({
     credential: admin.credential.cert(parseServiceAccount(raw)),
     databaseURL
@@ -44,11 +46,23 @@ function getDb() {
   return app.database();
 }
 
+function getCookie(req, name) {
+  const raw = String(req.headers?.cookie || '');
+  for (const part of raw.split(';')) {
+    const [k, ...rest] = part.trim().split('=');
+    if (k === name) return rest.join('=');
+  }
+  return '';
+}
+
 async function readBody(req) {
   if (req.body && typeof req.body === 'object') return req.body;
   return await new Promise((resolve, reject) => {
     let raw = '';
-    req.on('data', chunk => { raw += chunk; if (raw.length > 10000) reject(new Error('Solicitud demasiado grande.')); });
+    req.on('data', chunk => {
+      raw += chunk;
+      if (raw.length > 10000) reject(new Error('Solicitud demasiado grande.'));
+    });
     req.on('end', () => {
       if (!raw) return resolve({});
       try { resolve(JSON.parse(raw)); } catch (_) { reject(new Error('JSON inválido.')); }
@@ -60,6 +74,7 @@ async function readBody(req) {
 module.exports = async function handler(req, res) {
   try {
     if (String(req.method || 'GET').toUpperCase() !== 'POST') return json(res, 405, { error: 'Método no permitido.' });
+
     const data = await readBody(req);
     const sessionId = String(data.sessionId || '').trim();
     const link = Number(data.link);
@@ -82,16 +97,36 @@ module.exports = async function handler(req, res) {
       return json(res, 409, { error: 'El enlace no está autorizado en este estado.' });
     }
 
+    // Every external step gets a fresh one-time browser ticket.
+    // The raw ticket never enters Firebase; only its SHA-256 hash is stored.
+    const ticket = crypto.randomBytes(32).toString('base64url');
+    const ticketHash = crypto.createHash('sha256').update(ticket).digest('hex');
     const now = Date.now();
-    await ref.update({ state: 'awaiting_external_return', externalStartedAt: now, attempts: Number(s.attempts || 0) + 1 });
-    return json(res, 200, { session: {
-      id: s.id,
-      dur: Number(s.dur),
-      link: Number(s.link),
+    const ticketExpiresAt = Math.min(Number(s.expiresAt || 0), now + SESSION_TTL);
+
+    await ref.update({
       state: 'awaiting_external_return',
-      createdAt: Number(s.createdAt),
-      expiresAt: Number(s.expiresAt)
-    }, redirectUrl: AD_PROVIDER_BASE_URL });
+      externalStartedAt: now,
+      attempts: Number(s.attempts || 0) + 1,
+      verificationNonce: crypto.randomBytes(24).toString('hex'),
+      ticketHash,
+      ticketIssuedAt: now,
+      ticketExpiresAt,
+      verificationUsed: false
+    });
+
+    res.setHeader('Set-Cookie', `__Host-znexus_ticket=${ticket}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.max(1, Math.ceil((ticketExpiresAt - now) / 1000))}`);
+    return json(res, 200, {
+      session: {
+        id: s.id,
+        dur: Number(s.dur),
+        link: Number(s.link),
+        state: 'awaiting_external_return',
+        createdAt: Number(s.createdAt),
+        expiresAt: Number(s.expiresAt)
+      },
+      redirectUrl: AD_PROVIDER_BASE_URL
+    });
   } catch (e) {
     console.error('session/prepare-link:', e);
     return json(res, 500, { error: e && e.message ? String(e.message) : 'Error interno del servidor.', code: e && e.code ? String(e.code) : 'PREPARE_LINK_FAILED' });
