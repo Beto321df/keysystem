@@ -46,15 +46,6 @@ function getDb() {
   return app.database();
 }
 
-function getCookie(req, name) {
-  const raw = String(req.headers?.cookie || '');
-  for (const part of raw.split(';')) {
-    const [k, ...rest] = part.trim().split('=');
-    if (k === name) return rest.join('=');
-  }
-  return '';
-}
-
 async function readBody(req) {
   if (req.body && typeof req.body === 'object') return req.body;
   return await new Promise((resolve, reject) => {
@@ -69,6 +60,10 @@ async function readBody(req) {
     });
     req.on('error', reject);
   });
+}
+
+function sha256(value) {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
 }
 
 module.exports = async function handler(req, res) {
@@ -97,12 +92,14 @@ module.exports = async function handler(req, res) {
       return json(res, 409, { error: 'El enlace no está autorizado en este estado.' });
     }
 
-    // Every external step gets a fresh one-time browser ticket.
-    // The raw ticket never enters Firebase; only its SHA-256 hash is stored.
     const ticket = crypto.randomBytes(32).toString('base64url');
-    const ticketHash = crypto.createHash('sha256').update(ticket).digest('hex');
+    const ticketHash = sha256(ticket);
     const now = Date.now();
     const ticketExpiresAt = Math.min(Number(s.expiresAt || 0), now + SESSION_TTL);
+    const userAgentHash = sha256(req.headers?.['user-agent'] || '');
+    const acceptLanguageHash = sha256(req.headers?.['accept-language'] || '');
+    let providerHost = 'link-hub.net';
+    try { providerHost = new URL(AD_PROVIDER_BASE_URL).hostname.toLowerCase(); } catch (_) {}
 
     await ref.update({
       state: 'awaiting_external_return',
@@ -112,12 +109,12 @@ module.exports = async function handler(req, res) {
       ticketHash,
       ticketIssuedAt: now,
       ticketExpiresAt,
+      ticketUserAgentHash: userAgentHash,
+      ticketAcceptLanguageHash: acceptLanguageHash,
+      ticketProviderHost: providerHost,
       verificationUsed: false
     });
 
-    // Durable backup indexed by the one-time ticket hash. This lets the
-    // verifier recover from an accidental/mid-flow session deletion without
-    // trusting client-supplied state.
     await database.ref(`sessionTickets/${ticketHash}`).set({
       sessionId: s.id,
       dur: Number(s.dur),
@@ -125,7 +122,10 @@ module.exports = async function handler(req, res) {
       deviceId,
       createdAt: now,
       expiresAt: ticketExpiresAt,
-      used: false
+      used: false,
+      userAgentHash,
+      acceptLanguageHash,
+      providerHost
     });
 
     res.setHeader('Set-Cookie', `__Host-znexus_ticket=${ticket}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.max(1, Math.ceil((ticketExpiresAt - now) / 1000))}`);
