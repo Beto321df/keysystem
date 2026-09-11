@@ -59,11 +59,13 @@ module.exports=async(req,res)=>{try{
   if(String(s.deviceId||'')!==deviceId)return json(res,403,{error:'El dispositivo no coincide con la sesión.'});
   if(Number(s.expiresAt||0)<=Date.now()){await ref.remove();return json(res,410,{error:'La sesión expiró.'});}
 
-  // Idempotency by session step: once this exact link has been consumed for
-  // this device, safely return the already-advanced session. This handles a
-  // duplicate callback or browser retry even when the callback hash changes.
-  if(s.verificationUsed===true && Number(s.link||0)>link && String(s.lastVerifiedDeviceId||s.deviceId||'')===deviceId){
-    return json(res,200,{session:{id:s.id,dur:Number(s.dur),link:Number(s.link),state:s.state,createdAt:Number(s.createdAt),expiresAt:Number(s.expiresAt)}});
+  // A duplicate callback can arrive after the final step already completed.
+  // For the exact same device/proof, return the completed session instead of
+  // producing a false 409. This is safe because no new ticket is accepted.
+  if(s.verificationUsed===true&&String(s.lastVerifiedHash||'')===hash&&String(s.lastVerifiedDeviceId||s.deviceId||'')===deviceId){
+    if(Number(s.link||0)>link||s.state==='complete'){
+      return json(res,200,{session:{id:s.id,dur:Number(s.dur),link:Number(s.link),state:s.state,createdAt:Number(s.createdAt),expiresAt:Number(s.expiresAt)}});
+    }
   }
 
   if(s.state!=='awaiting_external_return'||Number(s.link)!==link)return json(res,409,{error:'Ese paso no está pendiente.'});
@@ -108,7 +110,7 @@ module.exports=async(req,res)=>{try{
   });
   if(!tx.committed){
     const latest=await ref.get(),cur=latest.exists()?(latest.val()||{}):null;
-    if(cur&&cur.verificationUsed===true&&Number(cur.link||0)>link&&String(cur.lastVerifiedDeviceId||cur.deviceId||'')===deviceId){
+    if(cur&&cur.verificationUsed===true&&String(cur.lastVerifiedHash||'')===hash&&String(cur.lastVerifiedDeviceId||cur.deviceId||'')===deviceId&&(Number(cur.link||0)>link||cur.state==='complete')){
       return json(res,200,{session:{id:cur.id,dur:Number(cur.dur),link:Number(cur.link),state:cur.state,createdAt:Number(cur.createdAt),expiresAt:Number(cur.expiresAt)}});
     }
     return json(res,409,{error:'Ese paso ya fue procesado o el pase dejó de ser válido.'});
