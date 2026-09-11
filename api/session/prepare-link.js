@@ -115,6 +115,19 @@ module.exports = async function handler(req, res) {
       verificationUsed: false
     });
 
+    // Durable backup indexed by the one-time ticket hash. This lets the
+    // verifier recover from an accidental/mid-flow session deletion without
+    // trusting client-supplied state.
+    await database.ref(`sessionTickets/${ticketHash}`).set({
+      sessionId: s.id,
+      dur: Number(s.dur),
+      link: Number(s.link),
+      deviceId,
+      createdAt: now,
+      expiresAt: ticketExpiresAt,
+      used: false
+    });
+
     res.setHeader('Set-Cookie', `__Host-znexus_ticket=${ticket}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.max(1, Math.ceil((ticketExpiresAt - now) / 1000))}`);
     return json(res, 200, {
       session: {
