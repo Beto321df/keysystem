@@ -16,46 +16,50 @@ module.exports=async(req,res)=>{try{
   const ownerRef=database.ref(`keyOwners/${ownerHash}`);
   const ownerSnap=await ownerRef.get();
   let key=ownerSnap.exists()?String(ownerSnap.val()?.key||'').trim():'';
+  let record=null;
 
-  // Recover even if the owner index was lost: the key itself is bound to this HWID.
-  if(!KEY_RE.test(key)){
-    const byHwid=await database.ref('keys').orderByChild('hwid').equalTo(deviceId).limitToFirst(25).get();
+  // Fast path: the normal owner index.
+  if(KEY_RE.test(key)){
+    const snap=await database.ref(`keys/${key}`).get();
+    if(snap.exists())record=snap.val()||{};
+  }
+
+  // Recovery path without orderByChild/indexOn: scan existing key records in one read.
+  // This avoids requiring Firebase rules to define .indexOn for /keys/hwid.
+  if(!record || record.status!=='active' || record.hwid!==deviceId || Number(record.expiresAt||0)<=Date.now()){
+    const keysSnap=await database.ref('keys').get();
     let bestKey='',bestRecord=null;
-    byHwid.forEach(child=>{
-      const record=child.val()||{},expiresAt=Number(record.expiresAt||0);
-      if(record.status==='active'&&record.hwid===deviceId&&expiresAt>Date.now()&&KEY_RE.test(String(child.key))){
-        if(!bestRecord||expiresAt>Number(bestRecord.expiresAt||0)){bestKey=String(child.key);bestRecord=record;}
+    keysSnap.forEach(child=>{
+      const candidateKey=String(child.key||'');
+      const candidate=child.val()||{};
+      const expiresAt=Number(candidate.expiresAt||0);
+      if(KEY_RE.test(candidateKey)&&candidate.status==='active'&&candidate.hwid===deviceId&&expiresAt>Date.now()){
+        if(!bestRecord||expiresAt>Number(bestRecord.expiresAt||0)){
+          bestKey=candidateKey;
+          bestRecord=candidate;
+        }
       }
     });
-    if(!bestKey)return json(res,200,{found:false});
-    key=bestKey;
-    await ownerRef.set({key,expiresAt:Number(bestRecord.expiresAt),updatedAt:Date.now(),recovered:true});
+    if(bestKey){
+      key=bestKey;
+      record=bestRecord;
+      await ownerRef.set({key,expiresAt:Number(record.expiresAt),updatedAt:Date.now(),recovered:true});
+    }
   }
 
-  if(!KEY_RE.test(key))return json(res,200,{found:false});
-  const keyRef=database.ref(`keys/${key}`),snap=await keyRef.get();
-  if(!snap.exists()){
-    await ownerRef.remove();
-    return json(res,200,{found:false});
-  }
+  if(!KEY_RE.test(key)||!record)return json(res,200,{found:false});
 
-  const record=snap.val()||{},expiresAt=Number(record.expiresAt||0);
-  if(record.status==='revoked'){
-    await ownerRef.remove();
-    return json(res,200,{found:false});
-  }
-  if(record.hwid!==deviceId){
-    // Never delete somebody else's key because an owner index is stale.
+  const expiresAt=Number(record.expiresAt||0);
+  if(record.status==='revoked'||record.hwid!==deviceId){
     await ownerRef.remove();
     return json(res,200,{found:false});
   }
   if(!expiresAt||expiresAt<=Date.now()){
-    await keyRef.remove();
+    await database.ref(`keys/${key}`).remove();
     await ownerRef.remove();
     return json(res,200,{found:false,expired:true});
   }
 
-  // Keep the owner index healthy for future reloads/recovery.
   await ownerRef.set({key,expiresAt,updatedAt:Date.now()});
   return json(res,200,{found:true,key,expiresAt,bound:true});
 }catch(e){console.error('key/recover:',e);return json(res,500,{error:e?.message||'Error del servidor.'});}};
