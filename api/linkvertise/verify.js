@@ -1,16 +1,29 @@
 const crypto = require('crypto');
 const admin = require('firebase-admin');
 const REQUIREMENTS = { 6: 1, 12: 2, 24: 3, 30: 4 };
-const KEY_RE = /^FREE_[A-Z]{9}-[0-9]{4}$/;
 const DEVICE_RE = /^HWID-[A-Z0-9]{24}$/;
 const HOSTNAME = String(process.env.TURNSTILE_HOSTNAME || 'zkeysystem.vercel.app').trim().toLowerCase();
+const AD_PROVIDER_BASE_URL = process.env.AD_PROVIDER_BASE_URL || 'https://link-hub.net/6768455/XHZ48dyFzfQL';
 
 function json(res,status,payload){res.statusCode=status;res.setHeader('Content-Type','application/json; charset=utf-8');res.setHeader('Cache-Control','no-store, no-cache, must-revalidate');res.setHeader('X-Content-Type-Options','nosniff');res.end(JSON.stringify(payload));}
 function parseServiceAccount(raw){let s=String(raw||'').trim(),c=[s];if((s.startsWith('"')&&s.endsWith('"'))||(s.startsWith("'")&&s.endsWith("'"))){try{const q=s.startsWith('"')?JSON.parse(s):s.slice(1,-1);if(typeof q==='string')c.unshift(q)}catch{}}for(const x of c){try{let o=JSON.parse(x);if(typeof o==='string')o=JSON.parse(o);if(o&&o.project_id&&o.client_email&&o.private_key){o.private_key=String(o.private_key).replace(/\\n/g,'\n');return o}}catch{}}throw new Error('La credencial de Firebase no es válida.');}
 function db(){if(admin.apps.length)return admin.app().database();const raw=process.env.FIREBASE_SERVICE_ACCOUNT_JSONZ||process.env.FIREBASE_SERVICE_ACCOUNT_JSON,url=process.env.FIREBASE_DATABASE_URL;if(!raw||!url)throw new Error('Firebase del servidor no está configurado.');return admin.initializeApp({credential:admin.credential.cert(parseServiceAccount(raw)),databaseURL:url}).database();}
 function cookie(req,name){const raw=String(req.headers?.cookie||'');for(const p of raw.split(';')){const [k,...r]=p.trim().split('=');if(k===name)return r.join('=')}return '';}
 function equal(a,b){const x=Buffer.from(String(a||'')),y=Buffer.from(String(b||''));return x.length===y.length&&crypto.timingSafeEqual(x,y)}
+function sha256(value){return crypto.createHash('sha256').update(String(value||'')).digest('hex')}
 function body(req){if(req.body&&typeof req.body==='object')return Promise.resolve(req.body);return new Promise((resolve,reject)=>{let r='';req.on('data',c=>{r+=c;if(r.length>12000)reject(new Error('Solicitud demasiado grande.'))});req.on('end',()=>{if(!r)return resolve({});try{resolve(JSON.parse(r))}catch{reject(new Error('JSON inválido.'))}});req.on('error',reject)})}
+function providerHosts(){const hosts=new Set(['linkvertise.com','link-hub.net']);try{hosts.add(new URL(AD_PROVIDER_BASE_URL).hostname.toLowerCase())}catch{}return hosts}
+function isProviderHost(host){host=String(host||'').trim().toLowerCase().replace(/\.$/,'');if(!host)return false;for(const base of providerHosts()){if(host===base||host.endsWith(`.${base}`))return true}return false}
+function externalReturnLooksReal(req){
+  const fetchSite=String(req.headers?.['sec-fetch-site']||'').trim().toLowerCase();
+  const referer=String(req.headers?.referer||'').trim();
+  let refererHost='';
+  if(referer){try{refererHost=new URL(referer).hostname.toLowerCase()}catch{}}
+  if(fetchSite==='cross-site'&&refererHost&&!isProviderHost(refererHost))throw Object.assign(new Error('El regreso no proviene del proveedor autorizado.'),{status:403});
+  if(fetchSite==='none'||fetchSite==='same-origin'||fetchSite==='same-site'){if(!isProviderHost(refererHost))throw Object.assign(new Error('Abre el enlace desde el regreso normal del proveedor.'),{status:403});}
+  if(isProviderHost(refererHost)||fetchSite==='cross-site')return;
+  throw Object.assign(new Error('No se detectó un regreso válido desde el proveedor.'),{status:403});
+}
 async function verifyHuman(token,req){
   const secret=String(process.env.TURNSTILE_SECRET_KEY||'').trim();
   if(!secret)throw Object.assign(new Error('TURNSTILE_SECRET_KEY no está configurada en Vercel.'),{status:500});
@@ -23,24 +36,20 @@ async function verifyHuman(token,req){
   if(HOSTNAME&&String(d.hostname||'').trim().toLowerCase()!==HOSTNAME)throw Object.assign(new Error('Host de verificación inválido.'),{status:403});
   return d;
 }
-
-async function recoverFromTicket(database,ticketHash,sessionId,deviceId,link){
+async function recoverFromTicket(database,ticketHash,sessionId,deviceId,link,userAgentHash,acceptLanguageHash){
   if(!ticketHash)return null;
   const ref=database.ref(`sessionTickets/${ticketHash}`),snap=await ref.get();
   if(!snap.exists())return null;
   const t=snap.val()||{};
-  if(t.used===true||Number(t.expiresAt||0)<=Date.now()){
-    await ref.remove();
-    return null;
-  }
+  if(t.used===true||Number(t.expiresAt||0)<=Date.now()){await ref.remove();return null;}
   if(String(t.sessionId||'')!==sessionId||String(t.deviceId||'')!==deviceId||Number(t.link)!==link)return null;
-  const required=REQUIREMENTS[Number(t.dur)];
-  if(!required)return null;
-  const session={id:sessionId,dur:Number(t.dur),link:Number(t.link),state:'awaiting_external_return',createdAt:Number(t.createdAt||Date.now()),expiresAt:Number(t.expiresAt),deviceId,completedLinks:Math.max(0,Number(t.completedLinks||0)),attempts:1,verificationUsed:false,ticketHash,ticketIssuedAt:Number(t.createdAt||Date.now()),ticketExpiresAt:Number(t.expiresAt),verificationNonce:crypto.randomBytes(24).toString('hex')};
+  if(t.userAgentHash&&!equal(String(t.userAgentHash),userAgentHash))return null;
+  if(t.acceptLanguageHash&&!equal(String(t.acceptLanguageHash),acceptLanguageHash))return null;
+  const required=REQUIREMENTS[Number(t.dur)];if(!required)return null;
+  const session={id:sessionId,dur:Number(t.dur),link:Number(t.link),state:'awaiting_external_return',createdAt:Number(t.createdAt||Date.now()),expiresAt:Number(t.expiresAt),deviceId,completedLinks:Math.max(0,Number(t.completedLinks||0)),attempts:1,verificationUsed:false,ticketHash,ticketIssuedAt:Number(t.createdAt||Date.now()),ticketExpiresAt:Number(t.expiresAt),ticketUserAgentHash:String(t.userAgentHash||''),ticketAcceptLanguageHash:String(t.acceptLanguageHash||''),ticketProviderHost:String(t.providerHost||''),verificationNonce:crypto.randomBytes(24).toString('hex')};
   await database.ref(`sessions/${sessionId}`).set(session);
   return session;
 }
-
 module.exports=async(req,res)=>{try{
   if(req.method!=='POST')return json(res,405,{error:'Método no permitido.'});
   const x=await body(req),sessionId=String(x.sessionId||'').trim(),hash=String(x.hash||'').trim(),link=Number(x.link),deviceId=String(x.deviceId||'').trim(),turnstileToken=String(x.turnstileToken||'').trim();
@@ -49,10 +58,10 @@ module.exports=async(req,res)=>{try{
   if(!Number.isInteger(link)||link<1||link>4)return json(res,400,{error:'Paso inválido.'});
   if(!DEVICE_RE.test(deviceId))return json(res,400,{error:'Device ID inválido.'});
 
-  const database=db(),ref=database.ref(`sessions/${sessionId}`),ticket=cookie(req,'__Host-znexus_ticket'),ticketHash=ticket?crypto.createHash('sha256').update(ticket).digest('hex'):'';
+  const database=db(),ref=database.ref(`sessions/${sessionId}`),ticket=cookie(req,'__Host-znexus_ticket'),ticketHash=ticket?sha256(ticket):'',userAgentHash=sha256(req.headers?.['user-agent']||''),acceptLanguageHash=sha256(req.headers?.['accept-language']||'');
   let snap=await ref.get();
   if(!snap.exists()){
-    const restored=await recoverFromTicket(database,ticketHash,sessionId,deviceId,link);
+    const restored=await recoverFromTicket(database,ticketHash,sessionId,deviceId,link,userAgentHash,acceptLanguageHash);
     if(!restored)return json(res,404,{error:'Sesión no encontrada.'});
     snap={exists:()=>true,val:()=>restored};
   }
@@ -64,23 +73,48 @@ module.exports=async(req,res)=>{try{
   if(Number(s.expiresAt||0)<=Date.now()){await ref.remove();return json(res,410,{error:'La sesión expiró.'});}
   if(s.state!=='awaiting_external_return'||Number(s.link)!==link)return json(res,409,{error:'Ese paso no está pendiente.'});
   if(s.verificationUsed===true)return json(res,409,{error:'Este intento ya fue procesado.'});
-
   const currentTicketHash=s.ticketHash||ticketHash;
   if(!ticket||!currentTicketHash||!equal(ticketHash,currentTicketHash))return json(res,403,{error:'Pase de navegador inválido. Regresa usando el flujo normal.'});
   if(Number(s.ticketExpiresAt||0)<=Date.now())return json(res,403,{error:'El pase de navegador expiró. Inicia el paso de nuevo.'});
+  if(s.ticketUserAgentHash&&!equal(String(s.ticketUserAgentHash),userAgentHash))return json(res,403,{error:'El navegador no coincide con el que inició este paso.'});
+  if(s.ticketAcceptLanguageHash&&!equal(String(s.ticketAcceptLanguageHash),acceptLanguageHash))return json(res,403,{error:'La sesión de navegador no coincide.'});
 
-  const now=Date.now();
-  const completed=Math.min(required,Number(s.completedLinks||0)+1),next=Number(s.link)<required?Number(s.link)+1:Number(s.link),state=completed>=required?'complete':'ready';
+  externalReturnLooksReal(req);
+
+  const now=Date.now(),completed=Math.min(required,Number(s.completedLinks||0)+1),next=Number(s.link)<required?Number(s.link)+1:Number(s.link),state=completed>=required?'complete':'ready';
   if(completed===required)await verifyHuman(turnstileToken,req);
 
-  const latest=await ref.get();
-  if(!latest.exists())return json(res,404,{error:'La sesión ya no está disponible.'});
-  s=latest.val()||{};
-  if(String(s.deviceId||'')!==deviceId||s.state!=='awaiting_external_return'||Number(s.link)!==link||s.verificationUsed===true)return json(res,409,{error:'Ese paso ya fue procesado.'});
-  if(!s.ticketHash||!equal(String(s.ticketHash),ticketHash))return json(res,403,{error:'El pase de navegador ya no es válido.'});
-
-  await ref.update({link:next,completedLinks:completed,totalLinks:required,state,lastVerifiedAt:now,lastVerifiedHash:hash,verificationUsed:true,verificationConsumedAt:now,turnstileVerifiedAt:completed===required?now:null,ticketHash:null,verificationNonce:null,ticketIssuedAt:null,ticketExpiresAt:null,externalStartedAt:null});
+  const tx=await ref.transaction(current=>{
+    if(!current||typeof current!=='object')return;
+    if(String(current.deviceId||'')!==deviceId)return;
+    if(current.state!=='awaiting_external_return'||Number(current.link)!==link)return;
+    if(current.verificationUsed===true)return;
+    if(!current.ticketHash||!equal(String(current.ticketHash),ticketHash))return;
+    if(Number(current.ticketExpiresAt||0)<=Date.now())return;
+    if(current.ticketUserAgentHash&&!equal(String(current.ticketUserAgentHash),userAgentHash))return;
+    if(current.ticketAcceptLanguageHash&&!equal(String(current.ticketAcceptLanguageHash),acceptLanguageHash))return;
+    current.link=next;
+    current.completedLinks=completed;
+    current.totalLinks=required;
+    current.state=state;
+    current.lastVerifiedAt=now;
+    current.lastVerifiedHash=hash;
+    current.verificationUsed=true;
+    current.verificationConsumedAt=now;
+    current.turnstileVerifiedAt=completed===required?now:null;
+    current.ticketHash=null;
+    current.ticketIssuedAt=null;
+    current.ticketExpiresAt=null;
+    current.ticketUserAgentHash=null;
+    current.ticketAcceptLanguageHash=null;
+    current.ticketProviderHost=null;
+    current.externalStartedAt=null;
+    current.verificationNonce=null;
+    return current;
+  });
+  if(!tx.committed)return json(res,409,{error:'Ese paso ya fue procesado o el pase dejó de ser válido.'});
+  const out=tx.snapshot.exists()?tx.snapshot.val():{};
   await database.ref(`sessionTickets/${ticketHash}`).update({used:true,usedAt:now,completedLinks:completed});
   res.setHeader('Set-Cookie','__Host-znexus_ticket=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0');
-  return json(res,200,{session:{id:s.id,dur:Number(s.dur),link:next,state,createdAt:Number(s.createdAt),expiresAt:Number(s.expiresAt)}});
+  return json(res,200,{session:{id:out.id,dur:Number(out.dur),link:Number(out.link),state:out.state,createdAt:Number(out.createdAt),expiresAt:Number(out.expiresAt)}});
 }catch(e){console.error('linkvertise/verify:',e);return json(res,Number(e?.status)||500,{error:e?.name==='AbortError'?'Turnstile tardó demasiado en responder.':(typeof e?.message==='string'?e.message:'Error interno del servidor.')});}};
