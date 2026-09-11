@@ -59,10 +59,10 @@ module.exports=async(req,res)=>{try{
   if(String(s.deviceId||'')!==deviceId)return json(res,403,{error:'El dispositivo no coincide con la sesión.'});
   if(Number(s.expiresAt||0)<=Date.now()){await ref.remove();return json(res,410,{error:'La sesión expiró.'});}
 
-  // Idempotency: a browser can repeat the same POST after a successful commit
-  // (for example after a response race). Return the already-advanced session
-  // instead of turning a legitimate retry into a false 409.
-  if(s.verificationUsed===true && String(s.lastVerifiedHash||'')===hash && Number(s.lastVerifiedAt||0)>Date.now()-60000 && String(s.lastVerifiedDeviceId||s.deviceId||'')===deviceId){
+  // Idempotency by session step: once this exact link has been consumed for
+  // this device, safely return the already-advanced session. This handles a
+  // duplicate callback or browser retry even when the callback hash changes.
+  if(s.verificationUsed===true && Number(s.link||0)>link && String(s.lastVerifiedDeviceId||s.deviceId||'')===deviceId){
     return json(res,200,{session:{id:s.id,dur:Number(s.dur),link:Number(s.link),state:s.state,createdAt:Number(s.createdAt),expiresAt:Number(s.expiresAt)}});
   }
 
@@ -108,7 +108,7 @@ module.exports=async(req,res)=>{try{
   });
   if(!tx.committed){
     const latest=await ref.get(),cur=latest.exists()?(latest.val()||{}):null;
-    if(cur&&cur.verificationUsed===true&&String(cur.lastVerifiedHash||'')===hash&&String(cur.lastVerifiedDeviceId||cur.deviceId||'')===deviceId&&Number(cur.lastVerifiedAt||0)>Date.now()-60000){
+    if(cur&&cur.verificationUsed===true&&Number(cur.link||0)>link&&String(cur.lastVerifiedDeviceId||cur.deviceId||'')===deviceId){
       return json(res,200,{session:{id:cur.id,dur:Number(cur.dur),link:Number(cur.link),state:cur.state,createdAt:Number(cur.createdAt),expiresAt:Number(cur.expiresAt)}});
     }
     return json(res,409,{error:'Ese paso ya fue procesado o el pase dejó de ser válido.'});
