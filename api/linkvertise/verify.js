@@ -3,7 +3,6 @@ const admin = require('firebase-admin');
 const REQUIREMENTS = { 6: 1, 12: 2, 24: 3, 30: 4 };
 const DEVICE_RE = /^HWID-[A-Z0-9]{24}$/;
 const HOSTNAME = String(process.env.TURNSTILE_HOSTNAME || 'zkeysystem.vercel.app').trim().toLowerCase();
-const AD_PROVIDER_BASE_URL = process.env.AD_PROVIDER_BASE_URL || 'https://link-hub.net/6768455/XHZ48dyFzfQL';
 
 function json(res,status,payload){res.statusCode=status;res.setHeader('Content-Type','application/json; charset=utf-8');res.setHeader('Cache-Control','no-store, no-cache, must-revalidate');res.setHeader('X-Content-Type-Options','nosniff');res.end(JSON.stringify(payload));}
 function parseServiceAccount(raw){let s=String(raw||'').trim(),c=[s];if((s.startsWith('"')&&s.endsWith('"'))||(s.startsWith("'")&&s.endsWith("'"))){try{const q=s.startsWith('"')?JSON.parse(s):s.slice(1,-1);if(typeof q==='string')c.unshift(q)}catch{}}for(const x of c){try{let o=JSON.parse(x);if(typeof o==='string')o=JSON.parse(o);if(o&&o.project_id&&o.client_email&&o.private_key){o.private_key=String(o.private_key).replace(/\\n/g,'\n');return o}}catch{}}throw new Error('La credencial de Firebase no es válida.');}
@@ -12,18 +11,6 @@ function cookie(req,name){const raw=String(req.headers?.cookie||'');for(const p 
 function equal(a,b){const x=Buffer.from(String(a||'')),y=Buffer.from(String(b||''));return x.length===y.length&&crypto.timingSafeEqual(x,y)}
 function sha256(value){return crypto.createHash('sha256').update(String(value||'')).digest('hex')}
 function body(req){if(req.body&&typeof req.body==='object')return Promise.resolve(req.body);return new Promise((resolve,reject)=>{let r='';req.on('data',c=>{r+=c;if(r.length>12000)reject(new Error('Solicitud demasiado grande.'))});req.on('end',()=>{if(!r)return resolve({});try{resolve(JSON.parse(r))}catch{reject(new Error('JSON inválido.'))}});req.on('error',reject)})}
-function providerHosts(){const hosts=new Set(['linkvertise.com','link-hub.net']);try{hosts.add(new URL(AD_PROVIDER_BASE_URL).hostname.toLowerCase())}catch{}return hosts}
-function isProviderHost(host){host=String(host||'').trim().toLowerCase().replace(/\.$/,'');if(!host)return false;for(const base of providerHosts()){if(host===base||host.endsWith(`.${base}`))return true}return false}
-function externalReturnLooksReal(req){
-  const fetchSite=String(req.headers?.['sec-fetch-site']||'').trim().toLowerCase();
-  const referer=String(req.headers?.referer||'').trim();
-  let refererHost='';
-  if(referer){try{refererHost=new URL(referer).hostname.toLowerCase()}catch{}}
-  if(fetchSite==='cross-site'&&refererHost&&!isProviderHost(refererHost))throw Object.assign(new Error('El regreso no proviene del proveedor autorizado.'),{status:403});
-  if(fetchSite==='none'||fetchSite==='same-origin'||fetchSite==='same-site'){if(!isProviderHost(refererHost))throw Object.assign(new Error('Abre el enlace desde el regreso normal del proveedor.'),{status:403});}
-  if(isProviderHost(refererHost)||fetchSite==='cross-site')return;
-  throw Object.assign(new Error('No se detectó un regreso válido desde el proveedor.'),{status:403});
-}
 async function verifyHuman(token,req){
   const secret=String(process.env.TURNSTILE_SECRET_KEY||'').trim();
   if(!secret)throw Object.assign(new Error('TURNSTILE_SECRET_KEY no está configurada en Vercel.'),{status:500});
@@ -78,8 +65,6 @@ module.exports=async(req,res)=>{try{
   if(Number(s.ticketExpiresAt||0)<=Date.now())return json(res,403,{error:'El pase de navegador expiró. Inicia el paso de nuevo.'});
   if(s.ticketUserAgentHash&&!equal(String(s.ticketUserAgentHash),userAgentHash))return json(res,403,{error:'El navegador no coincide con el que inició este paso.'});
   if(s.ticketAcceptLanguageHash&&!equal(String(s.ticketAcceptLanguageHash),acceptLanguageHash))return json(res,403,{error:'La sesión de navegador no coincide.'});
-
-  externalReturnLooksReal(req);
 
   const now=Date.now(),completed=Math.min(required,Number(s.completedLinks||0)+1),next=Number(s.link)<required?Number(s.link)+1:Number(s.link),state=completed>=required?'complete':'ready';
   if(completed===required)await verifyHuman(turnstileToken,req);
