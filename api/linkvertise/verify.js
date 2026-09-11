@@ -2,7 +2,6 @@ const crypto = require('crypto');
 const admin = require('firebase-admin');
 
 const REQUIREMENTS = { 6: 1, 12: 2, 24: 3, 30: 4 };
-const MIN_DWELL_PER_LINK_MS = 6 * 1000;
 const DEVICE_RE = /^HWID-[A-Z0-9]{24}$/;
 const HOSTNAME = String(process.env.TURNSTILE_HOSTNAME || 'zkeysystem.vercel.app').trim().toLowerCase();
 
@@ -48,11 +47,7 @@ module.exports=async(req,res)=>{try{
   if(!ticket||!s.ticketHash||!equal(ticketHash,s.ticketHash))return json(res,403,{error:'Pase de navegador inválido. Regresa usando el flujo normal.'});
   if(Number(s.ticketExpiresAt||0)<=Date.now())return json(res,403,{error:'El pase de navegador expiró. Inicia el paso de nuevo.'});
 
-  const now=Date.now(),stepStart=Number(s.externalStartedAt||0),stepElapsed=stepStart?Math.max(0,now-stepStart):0,totalDwell=Number(s.totalExternalMs||0)+stepElapsed;
-  if(!stepStart)return json(res,403,{error:'No se detectó el inicio del paso.'});
-  const minTotal=required*MIN_DWELL_PER_LINK_MS;
-  if(totalDwell<minTotal)return json(res,403,{error:`Proceso demasiado rápido. Completa los ${required} anuncio(s) antes de verificar.`,code:'FLOW_TOO_FAST'});
-
+  const now=Date.now();
   const completed=Math.min(required,Number(s.completedLinks||0)+1),next=Number(s.link)<required?Number(s.link)+1:Number(s.link),state=completed>=required?'complete':'ready';
   if(completed===required)await verifyHuman(turnstileToken,req);
 
@@ -62,7 +57,7 @@ module.exports=async(req,res)=>{try{
   if(String(s.deviceId||'')!==deviceId||s.state!=='awaiting_external_return'||Number(s.link)!==link||s.verificationUsed===true)return json(res,409,{error:'Ese paso ya fue procesado.'});
   if(!s.ticketHash||!equal(String(s.ticketHash),crypto.createHash('sha256').update(ticket).digest('hex')))return json(res,403,{error:'El pase de navegador ya no es válido.'});
 
-  await ref.update({link:next,completedLinks:completed,totalLinks:required,state,totalExternalMs:totalDwell,lastVerifiedAt:now,lastVerifiedHash:hash,verificationUsed:true,verificationConsumedAt:now,turnstileVerifiedAt:completed===required?now:null,ticketHash:null,verificationNonce:null,ticketIssuedAt:null,ticketExpiresAt:null,externalStartedAt:null});
+  await ref.update({link:next,completedLinks:completed,totalLinks:required,state,lastVerifiedAt:now,lastVerifiedHash:hash,verificationUsed:true,verificationConsumedAt:now,turnstileVerifiedAt:completed===required?now:null,ticketHash:null,verificationNonce:null,ticketIssuedAt:null,ticketExpiresAt:null,externalStartedAt:null});
   res.setHeader('Set-Cookie','__Host-znexus_ticket=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0');
   return json(res,200,{session:{id:s.id,dur:Number(s.dur),link:next,state,createdAt:Number(s.createdAt),expiresAt:Number(s.expiresAt)}});
 }catch(e){console.error('linkvertise/verify:',e);return json(res,Number(e?.status)||500,{error:e?.name==='AbortError'?'Turnstile tardó demasiado en responder.':(typeof e?.message==='string'?e.message:'Error interno del servidor.')});}};
