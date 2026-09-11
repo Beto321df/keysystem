@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const admin = require('firebase-admin');
-
 const REQUIREMENTS = { 6: 1, 12: 2, 24: 3, 30: 4 };
+const KEY_RE = /^FREE_[A-Z]{9}-[0-9]{4}$/;
 const DEVICE_RE = /^HWID-[A-Z0-9]{24}$/;
 const HOSTNAME = String(process.env.TURNSTILE_HOSTNAME || 'zkeysystem.vercel.app').trim().toLowerCase();
 
@@ -24,6 +24,23 @@ async function verifyHuman(token,req){
   return d;
 }
 
+async function recoverFromTicket(database,ticketHash,sessionId,deviceId,link){
+  if(!ticketHash)return null;
+  const ref=database.ref(`sessionTickets/${ticketHash}`),snap=await ref.get();
+  if(!snap.exists())return null;
+  const t=snap.val()||{};
+  if(t.used===true||Number(t.expiresAt||0)<=Date.now()){
+    await ref.remove();
+    return null;
+  }
+  if(String(t.sessionId||'')!==sessionId||String(t.deviceId||'')!==deviceId||Number(t.link)!==link)return null;
+  const required=REQUIREMENTS[Number(t.dur)];
+  if(!required)return null;
+  const session={id:sessionId,dur:Number(t.dur),link:Number(t.link),state:'awaiting_external_return',createdAt:Number(t.createdAt||Date.now()),expiresAt:Number(t.expiresAt),deviceId,completedLinks:Math.max(0,Number(t.completedLinks||0)),attempts:1,verificationUsed:false,ticketHash,ticketIssuedAt:Number(t.createdAt||Date.now()),ticketExpiresAt:Number(t.expiresAt),verificationNonce:crypto.randomBytes(24).toString('hex')};
+  await database.ref(`sessions/${sessionId}`).set(session);
+  return session;
+}
+
 module.exports=async(req,res)=>{try{
   if(req.method!=='POST')return json(res,405,{error:'Método no permitido.'});
   const x=await body(req),sessionId=String(x.sessionId||'').trim(),hash=String(x.hash||'').trim(),link=Number(x.link),deviceId=String(x.deviceId||'').trim(),turnstileToken=String(x.turnstileToken||'').trim();
@@ -32,8 +49,13 @@ module.exports=async(req,res)=>{try{
   if(!Number.isInteger(link)||link<1||link>4)return json(res,400,{error:'Paso inválido.'});
   if(!DEVICE_RE.test(deviceId))return json(res,400,{error:'Device ID inválido.'});
 
-  const ref=db().ref(`sessions/${sessionId}`),snap=await ref.get();
-  if(!snap.exists())return json(res,404,{error:'Sesión no encontrada.'});
+  const database=db(),ref=database.ref(`sessions/${sessionId}`),ticket=cookie(req,'__Host-znexus_ticket'),ticketHash=ticket?crypto.createHash('sha256').update(ticket).digest('hex'):'';
+  let snap=await ref.get();
+  if(!snap.exists()){
+    const restored=await recoverFromTicket(database,ticketHash,sessionId,deviceId,link);
+    if(!restored)return json(res,404,{error:'Sesión no encontrada.'});
+    snap={exists:()=>true,val:()=>restored};
+  }
   let s=snap.val()||{};
   const required=REQUIREMENTS[Number(s.dur)];
   if(!required)return json(res,400,{error:'Duración de sesión inválida.'});
@@ -43,8 +65,8 @@ module.exports=async(req,res)=>{try{
   if(s.state!=='awaiting_external_return'||Number(s.link)!==link)return json(res,409,{error:'Ese paso no está pendiente.'});
   if(s.verificationUsed===true)return json(res,409,{error:'Este intento ya fue procesado.'});
 
-  const ticket=cookie(req,'__Host-znexus_ticket'),ticketHash=crypto.createHash('sha256').update(ticket).digest('hex');
-  if(!ticket||!s.ticketHash||!equal(ticketHash,s.ticketHash))return json(res,403,{error:'Pase de navegador inválido. Regresa usando el flujo normal.'});
+  const currentTicketHash=s.ticketHash||ticketHash;
+  if(!ticket||!currentTicketHash||!equal(ticketHash,currentTicketHash))return json(res,403,{error:'Pase de navegador inválido. Regresa usando el flujo normal.'});
   if(Number(s.ticketExpiresAt||0)<=Date.now())return json(res,403,{error:'El pase de navegador expiró. Inicia el paso de nuevo.'});
 
   const now=Date.now();
@@ -55,9 +77,10 @@ module.exports=async(req,res)=>{try{
   if(!latest.exists())return json(res,404,{error:'La sesión ya no está disponible.'});
   s=latest.val()||{};
   if(String(s.deviceId||'')!==deviceId||s.state!=='awaiting_external_return'||Number(s.link)!==link||s.verificationUsed===true)return json(res,409,{error:'Ese paso ya fue procesado.'});
-  if(!s.ticketHash||!equal(String(s.ticketHash),crypto.createHash('sha256').update(ticket).digest('hex')))return json(res,403,{error:'El pase de navegador ya no es válido.'});
+  if(!s.ticketHash||!equal(String(s.ticketHash),ticketHash))return json(res,403,{error:'El pase de navegador ya no es válido.'});
 
   await ref.update({link:next,completedLinks:completed,totalLinks:required,state,lastVerifiedAt:now,lastVerifiedHash:hash,verificationUsed:true,verificationConsumedAt:now,turnstileVerifiedAt:completed===required?now:null,ticketHash:null,verificationNonce:null,ticketIssuedAt:null,ticketExpiresAt:null,externalStartedAt:null});
+  await database.ref(`sessionTickets/${ticketHash}`).update({used:true,usedAt:now,completedLinks:completed});
   res.setHeader('Set-Cookie','__Host-znexus_ticket=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0');
   return json(res,200,{session:{id:s.id,dur:Number(s.dur),link:next,state,createdAt:Number(s.createdAt),expiresAt:Number(s.expiresAt)}});
 }catch(e){console.error('linkvertise/verify:',e);return json(res,Number(e?.status)||500,{error:e?.name==='AbortError'?'Turnstile tardó demasiado en responder.':(typeof e?.message==='string'?e.message:'Error interno del servidor.')});}};
