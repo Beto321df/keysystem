@@ -1,7 +1,8 @@
 const crypto = require('crypto');
 const admin = require('firebase-admin');
 
-const REQUIREMENTS = { 6: 1, 12: 2, 24: 3, 30: 4 };
+// Every duration requires the same 3 ad/link steps.
+const REQUIREMENTS = { 6: 3, 12: 3, 24: 3, 30: 3 };
 const SESSION_TTL = 15 * 60 * 1000;
 const DEVICE_RE = /^HWID-[A-Z0-9]{24}$/;
 
@@ -79,7 +80,7 @@ module.exports = async function handler(req, res) {
     const database = getDb();
     const now = Date.now();
     const id = crypto.randomUUID();
-    const session = { id, dur: hours, link: 1, state: 'ready', createdAt: now, expiresAt: now + SESSION_TTL, deviceId, completedLinks: 0, attempts: 0 };
+    const session = { id, dur: hours, link: 1, state: 'ready', createdAt: now, expiresAt: now + SESSION_TTL, deviceId, completedLinks: 0, attempts: 0, totalLinks: 3 };
     await database.ref(`sessions/${id}`).set(session);
 
     return json(res, 200, { session: {
