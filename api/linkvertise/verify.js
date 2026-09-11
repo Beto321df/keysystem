@@ -58,6 +58,14 @@ module.exports=async(req,res)=>{try{
   if(link>required)return json(res,409,{error:'Ese paso no es necesario para esta duración.'});
   if(String(s.deviceId||'')!==deviceId)return json(res,403,{error:'El dispositivo no coincide con la sesión.'});
   if(Number(s.expiresAt||0)<=Date.now()){await ref.remove();return json(res,410,{error:'La sesión expiró.'});}
+
+  // Idempotency: a browser can repeat the same POST after a successful commit
+  // (for example after a response race). Return the already-advanced session
+  // instead of turning a legitimate retry into a false 409.
+  if(s.verificationUsed===true && String(s.lastVerifiedHash||'')===hash && Number(s.lastVerifiedAt||0)>Date.now()-60000 && String(s.lastVerifiedDeviceId||s.deviceId||'')===deviceId){
+    return json(res,200,{session:{id:s.id,dur:Number(s.dur),link:Number(s.link),state:s.state,createdAt:Number(s.createdAt),expiresAt:Number(s.expiresAt)}});
+  }
+
   if(s.state!=='awaiting_external_return'||Number(s.link)!==link)return json(res,409,{error:'Ese paso no está pendiente.'});
   if(s.verificationUsed===true)return json(res,409,{error:'Este intento ya fue procesado.'});
   const currentTicketHash=s.ticketHash||ticketHash;
@@ -84,6 +92,7 @@ module.exports=async(req,res)=>{try{
     current.state=state;
     current.lastVerifiedAt=now;
     current.lastVerifiedHash=hash;
+    current.lastVerifiedDeviceId=deviceId;
     current.verificationUsed=true;
     current.verificationConsumedAt=now;
     current.turnstileVerifiedAt=completed===required?now:null;
@@ -97,7 +106,13 @@ module.exports=async(req,res)=>{try{
     current.verificationNonce=null;
     return current;
   });
-  if(!tx.committed)return json(res,409,{error:'Ese paso ya fue procesado o el pase dejó de ser válido.'});
+  if(!tx.committed){
+    const latest=await ref.get(),cur=latest.exists()?(latest.val()||{}):null;
+    if(cur&&cur.verificationUsed===true&&String(cur.lastVerifiedHash||'')===hash&&String(cur.lastVerifiedDeviceId||cur.deviceId||'')===deviceId&&Number(cur.lastVerifiedAt||0)>Date.now()-60000){
+      return json(res,200,{session:{id:cur.id,dur:Number(cur.dur),link:Number(cur.link),state:cur.state,createdAt:Number(cur.createdAt),expiresAt:Number(cur.expiresAt)}});
+    }
+    return json(res,409,{error:'Ese paso ya fue procesado o el pase dejó de ser válido.'});
+  }
   const out=tx.snapshot.exists()?tx.snapshot.val():{};
   await database.ref(`sessionTickets/${ticketHash}`).update({used:true,usedAt:now,completedLinks:completed});
   res.setHeader('Set-Cookie','__Host-znexus_ticket=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0');
