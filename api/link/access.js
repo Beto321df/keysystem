@@ -144,29 +144,49 @@ module.exports = async (req, res) => {
       const existing = existingSnap.exists() ? existingSnap.val() || {} : {};
       const existingToken = String(existing.accessToken || '');
       const existingExpiry = Number(existing.expiresAt || 0);
-      const existingPending = existing.active === true && String(existing.hwid || '').toUpperCase() === deviceId && ACCESS_RE.test(existingToken) && (!existingExpiry || existingExpiry > now);
+      const existingValid = existing.active === true &&
+        String(existing.hwid || '').toUpperCase() === deviceId &&
+        ACCESS_RE.test(existingToken);
 
-      // Mientras exista una key activa, o un ciclo pendiente de 15 minutos,
-      // siempre devolvemos el mismo enlace. Esto evita duplicados por spam de clicks.
-      if ((currentKey || existingPending) && existingPending) {
-        const expiresAt = currentKey ? currentKey.expiresAt : existingExpiry;
-        const patch = currentKey && Number(existing.expiresAt || 0) !== currentKey.expiresAt
-          ? { expiresAt: currentKey.expiresAt, key: currentKey.key, updatedAt: now }
-          : null;
-        if (patch) await accessRef.update(patch);
+      // Si el HWID ya tiene una key activa, el enlace existente se conserva
+      // siempre. Su expiración se sincroniza con la key y nunca se genera otro
+      // access token por cerrar/reabrir el juego o volver a pulsar Get Key.
+      if (currentKey && existingValid) {
+        if (existingExpiry !== currentKey.expiresAt || String(existing.key || '') !== currentKey.key) {
+          await accessRef.update({
+            key: currentKey.key,
+            expiresAt: currentKey.expiresAt,
+            status: 'active',
+            updatedAt: now,
+            revoked: false
+          });
+        }
         return json(res, 200, {
           active: true,
-          pendingKey: !currentKey,
+          pendingKey: false,
           hwid: deviceId,
           accessToken: existingToken,
           url: accessUrl(deviceId, existingToken),
-          expiresAt,
+          expiresAt: currentKey.expiresAt,
+          existing: true
+        });
+      }
+
+      const existingPending = existingValid && (!existingExpiry || existingExpiry > now) && !currentKey;
+      if (existingPending) {
+        return json(res, 200, {
+          active: true,
+          pendingKey: true,
+          hwid: deviceId,
+          accessToken: existingToken,
+          url: accessUrl(deviceId, existingToken),
+          expiresAt: existingExpiry,
           existing: true
         });
       }
 
       // Si la key anterior expiró, activeKeyFor() ya la limpió. El token viejo
-      // no se reutiliza: al reemplazar el registro, el URL anterior queda muerto.
+      // no se reutiliza: al iniciar un nuevo ciclo se crea un URL nuevo.
       const accessToken = crypto.randomBytes(32).toString('hex');
       const record = {
         active: true,
@@ -179,12 +199,15 @@ module.exports = async (req, res) => {
         expiresAt: currentKey?.expiresAt || now + PENDING_TTL
       };
 
-      // Firebase transaction makes the "one active URL per HWID" rule atomic.
+      // Firebase transaction makes the one-active-URL rule atomic.
       const tx = await accessRef.transaction(current => {
         const v = current || {};
         const token = String(v.accessToken || '');
         const exp = Number(v.expiresAt || 0);
-        const active = v.active === true && String(v.hwid || '').toUpperCase() === deviceId && ACCESS_RE.test(token) && (!exp || exp > now);
+        const active = v.active === true &&
+          String(v.hwid || '').toUpperCase() === deviceId &&
+          ACCESS_RE.test(token) &&
+          (!exp || exp > now);
         if (active) return v;
         return record;
       });
