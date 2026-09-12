@@ -71,4 +71,10 @@ module.exports=async(req,res)=>{try{
   await database.ref(`keys/${found.candidateKey}`).update({hwid:hwid,bound:true,ownerHash:ownerHash(hwid)});
   await ownerRef.set({key:found.candidateKey,expiresAt:found.expiresAt,updatedAt:Date.now(),migrated:true});
   return json(res,200,{found:true,key:found.candidateKey,expiresAt:found.expiresAt,bound:true,hwid});
-}catch(e){console.error('key/recover:',e);return json(res,500,{error:e?.message||'Error del servidor.'});}};
+}catch(e){
+  console.error('key/recover:',e);
+  // Recovery is optional during first load. A Firebase hiccup must not turn
+  // the whole key page into "[object Object]"; the UI can continue to start
+  // a fresh session and the next recovery poll can retry later.
+  return json(res,200,{found:false,recoveryUnavailable:true});
+}};
