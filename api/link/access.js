@@ -193,14 +193,17 @@ module.exports = async (req, res) => {
     const storedToken = String(access.accessToken || '');
     const validToken = storedToken === accessToken && accessHash(accessToken) === String(access.accessHash || '');
 
+    // El enlace de lanzamiento debe poder abrirse ANTES de que exista una key.
+    // La key se crea después de completar el flujo de anuncios + Turnstile.
     if (access.active !== true || String(access.hwid || '').toUpperCase() !== deviceId || !validToken) {
       return json(res, 403, { allowed: false, reason: 'link_inactive' });
     }
 
     const key = await activeKeyFor(database, deviceId);
+
+    // Sin key todavía: el enlace es válido y el frontend puede iniciar el proceso.
     if (!key) {
-      await accessRef.update({ active: false, revokedAt: Date.now(), reason: 'key_expired' });
-      return json(res, 403, { allowed: false, reason: 'key_expired' });
+      return json(res, 200, { allowed: true, hwid: deviceId, pendingKey: true });
     }
 
     return json(res, 200, { allowed: true, expiresAt: key.expiresAt });
