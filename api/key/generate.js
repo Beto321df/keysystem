@@ -70,30 +70,6 @@ async function readBody(req) {
   });
 }
 
-async function verifyTurnstile(token, req) {
-  const secret = String(process.env.TURNSTILE_SECRET_KEY || '').trim();
-  if (!secret) throw new Error('Turnstile no está configurado en el servidor.');
-  if (!token) return false;
-  const params = new URLSearchParams();
-  params.set('secret', secret);
-  params.set('response', String(token));
-  const ip = String(req.headers?.['x-forwarded-for'] || '').split(',')[0].trim();
-  if (ip) params.set('remoteip', ip);
-  const r = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params.toString()
-  });
-  if (!r.ok) return false;
-  const data = await r.json().catch(() => null);
-  if (!data?.success) return false;
-  const expectedHost = String(process.env.TURNSTILE_HOSTNAME || '').trim();
-  if (expectedHost && Array.isArray(data.hostname) && !data.hostname.includes(expectedHost)) return false;
-  if (expectedHost && data.hostname && String(data.hostname) !== expectedHost) return false;
-  if (data.action && String(data.action) !== 'keyverify') return false;
-  return true;
-}
-
 module.exports = async (req, res) => {
   try {
     if (req.method === 'OPTIONS') return json(res, 204, {});
@@ -102,7 +78,6 @@ module.exports = async (req, res) => {
     const body = await readBody(req);
     const sessionId = String(body.sessionId || '').trim();
     const deviceId = String(body.deviceId || '').trim().toUpperCase();
-    const turnstileToken = String(body.turnstileToken || body.token || '').trim();
 
     if (!/^[a-f0-9-]{20,100}$/i.test(sessionId)) return json(res, 400, { error: 'Sesión inválida.' });
     if (!DEVICE_RE.test(deviceId)) return json(res, 400, { error: 'Device ID inválido.' });
@@ -126,6 +101,13 @@ module.exports = async (req, res) => {
       return json(res, 409, { error: 'Completa todos los pasos antes de generar la key.' });
     }
 
+    // Turnstile is verified and consumed by /api/linkvertise/verify on the final step.
+    // The session timestamp is the server-side proof; asking for the same token again
+    // here would reject a valid flow because Turnstile tokens are single-use.
+    if (!Number(session.turnstileVerifiedAt || 0)) {
+      return json(res, 403, { error: 'La verificación anti-bot no fue válida.' });
+    }
+
     const owner = ownerHash(deviceId);
     const ownerRef = database.ref(`keyOwners/${owner}`);
     const ownerSnap = await ownerRef.get();
@@ -136,9 +118,6 @@ module.exports = async (req, res) => {
         return json(res, 200, { ok: true, key: oldKey, expiresAt: Number(old.expiresAt), existing: true });
       }
     }
-
-    const verified = await verifyTurnstile(turnstileToken, req);
-    if (!verified) return json(res, 403, { error: 'La verificación anti-bot no fue válida.' });
 
     let key = '';
     let expiresAt = 0;
