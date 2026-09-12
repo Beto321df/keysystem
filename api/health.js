@@ -1,0 +1,62 @@
+const admin = require('firebase-admin');
+
+module.exports = async function (req, res) {
+  if (req.method !== 'GET') {
+    res.statusCode = 405;
+    res.setHeader('Allow', 'GET');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.end(JSON.stringify({ ok: false, error: 'Método no permitido.' }));
+  }
+
+  const out = {
+    ok: true,
+    service: 'znexus-api',
+    version: '2026.9-free',
+    firebaseConfigured: Boolean(
+      (process.env.FIREBASE_SERVICE_ACCOUNT_JSONZ || process.env.FIREBASE_SERVICE_ACCOUNT_JSON) &&
+      process.env.FIREBASE_DATABASE_URL
+    ),
+    linkvertiseConfigured: Boolean(process.env.LINKVERTISE_ANTI_BYPASS_TOKEN),
+    firebaseRuntime: false
+  };
+
+  try {
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSONZ || process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    const url = process.env.FIREBASE_DATABASE_URL;
+    if (!raw || !url) throw new Error('Faltan variables de Firebase.');
+
+    let service;
+    const s = String(raw).trim();
+    try {
+      service = JSON.parse(s);
+      if (typeof service === 'string') service = JSON.parse(service);
+    } catch {
+      throw new Error('El JSON de Firebase no se puede interpretar.');
+    }
+
+    if (!service?.project_id || !service?.client_email || !service?.private_key) {
+      throw new Error('El Service Account no tiene project_id, client_email o private_key.');
+    }
+
+    service.private_key = String(service.private_key).replace(/\\n/g, '\n');
+
+    const firebaseApp = admin.apps.length
+      ? admin.app()
+      : admin.initializeApp({
+          credential: admin.credential.cert(service),
+          databaseURL: url
+        });
+
+    const snap = await firebaseApp.database().ref('.info/connected').get();
+    out.firebaseRuntime = true;
+    out.firebaseConnected = Boolean(snap.val());
+  } catch (e) {
+    out.firebaseError = typeof e?.message === 'string' ? e.message : 'Error de Firebase.';
+  }
+
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.end(JSON.stringify(out));
+};
