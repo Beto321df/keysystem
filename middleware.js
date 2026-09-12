@@ -1,15 +1,21 @@
 const HWID_RE = /^HWID-[A-Z0-9]{24}$/;
+const HASH_RE = /^[A-Za-z0-9]{64}$/;
 
 export default function middleware(request) {
   const url = new URL(request.url);
   const pathname = url.pathname;
 
-  // The key system is intentionally not usable from the bare domain.
-  // Only the script-generated URL carrying a valid HWID may open the UI.
   if (pathname === '/' || pathname === '/index.html') {
     const hwid = String(url.searchParams.get('hwid') || '').trim().toUpperCase();
+    const hash = String(url.searchParams.get('hash') || '').trim();
 
-    if (!HWID_RE.test(hwid)) {
+    // Linkvertise returns to the hash URL, so that return URL must remain
+    // accessible. The backend still requires the valid server ticket/session
+    // before accepting the hash, so a copied hash cannot complete the flow.
+    const validLaunch = HWID_RE.test(hwid);
+    const validReturn = HASH_RE.test(hash);
+
+    if (!validLaunch && !validReturn) {
       return new Response(`<!doctype html>
 <html lang="es">
 <head>
