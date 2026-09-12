@@ -4,6 +4,7 @@ const admin = require('firebase-admin');
 const REQUIREMENTS = { 6: 1, 12: 2, 24: 3, 30: 4 };
 const KEY_RE = /^FREE_[A-Z]{9}-[0-9]{4}$/;
 const DEVICE_RE = /^HWID-[A-Z0-9]{24}$/;
+const ACCESS_RE = /^[A-Fa-f0-9]{64}$/;
 
 function json(res, status, payload) {
   res.statusCode = status;
@@ -41,6 +42,10 @@ function db() {
 
 function ownerHash(deviceId) {
   return crypto.createHash('sha256').update(String(deviceId)).digest('hex');
+}
+
+function accessHash(token) {
+  return crypto.createHash('sha256').update(String(token)).digest('hex');
 }
 
 function randomLetters(n) {
@@ -115,6 +120,14 @@ module.exports = async (req, res) => {
       const old = ownerSnap.val() || {};
       const oldKey = String(old.key || '').toUpperCase();
       if (KEY_RE.test(oldKey) && Number(old.expiresAt || 0) > Date.now()) {
+        const accessRef = database.ref(`linkAccess/${owner}`);
+        const accessSnap = await accessRef.get();
+        if (accessSnap.exists()) {
+          const access = accessSnap.val() || {};
+          if (access.active === true && String(access.hwid || '').toUpperCase() === deviceId && ACCESS_RE.test(String(access.accessToken || ''))) {
+            await accessRef.update({ key: oldKey, expiresAt: Number(old.expiresAt), updatedAt: Date.now() });
+          }
+        }
         return json(res, 200, { ok: true, key: oldKey, expiresAt: Number(old.expiresAt), existing: true });
       }
     }
@@ -146,6 +159,25 @@ module.exports = async (req, res) => {
     if (!key) return json(res, 500, { error: 'No se pudo generar una key única.' });
 
     await ownerRef.set({ key, expiresAt, updatedAt: Date.now() });
+
+    // El acceso actual queda ligado a esta key y expira exactamente cuando la key.
+    // El token no se reemplaza mientras siga activo, así se conserva un único URL.
+    const accessRef = database.ref(`linkAccess/${owner}`);
+    const accessSnap = await accessRef.get();
+    const access = accessSnap.exists() ? accessSnap.val() || {} : {};
+    const accessToken = String(access.accessToken || '');
+    if (access.active === true && String(access.hwid || '').toUpperCase() === deviceId && ACCESS_RE.test(accessToken)) {
+      await accessRef.update({
+        key,
+        expiresAt,
+        status: 'active',
+        keyGenerated: true,
+        keyGeneratedAt: Date.now(),
+        updatedAt: Date.now(),
+        accessHash: accessHash(accessToken)
+      });
+    }
+
     await sessionRef.update({ keyGenerated: true, key, keyGeneratedAt: Date.now() });
 
     return json(res, 200, { ok: true, key, expiresAt, duration: hours, hwid: deviceId, existing: false });
