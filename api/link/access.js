@@ -4,6 +4,8 @@ const admin = require('firebase-admin');
 const DEVICE_RE = /^HWID-[A-Z0-9]{24}$/;
 const KEY_RE = /^FREE_[A-Z]{9}-[0-9]{4}$/;
 const ACCESS_RE = /^[A-Fa-f0-9]{64}$/;
+const PENDING_TTL = 15 * 60 * 1000;
+const BASE_URL = 'https://zkeysystem.vercel.app/';
 
 function json(res, status, payload) {
   res.statusCode = status;
@@ -52,6 +54,10 @@ function ownerHash(deviceId) {
 
 function accessHash(token) {
   return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
+function accessUrl(deviceId, token) {
+  return `${BASE_URL}?hwid=${encodeURIComponent(deviceId)}&access=${encodeURIComponent(token)}`;
 }
 
 function cookie(req, name) {
@@ -132,41 +138,69 @@ module.exports = async (req, res) => {
       const action = String(body.action || 'activate').trim().toLowerCase();
       if (action !== 'activate') return json(res, 400, { error: 'Acción inválida.' });
 
-      const key = await activeKeyFor(database, deviceId);
+      const now = Date.now();
+      const currentKey = await activeKeyFor(database, deviceId);
       const existingSnap = await accessRef.get();
       const existing = existingSnap.exists() ? existingSnap.val() || {} : {};
+      const existingToken = String(existing.accessToken || '');
+      const existingExpiry = Number(existing.expiresAt || 0);
+      const existingPending = existing.active === true && String(existing.hwid || '').toUpperCase() === deviceId && ACCESS_RE.test(existingToken) && (!existingExpiry || existingExpiry > now);
 
-      // Mientras exista una key activa, se conserva el mismo enlace.
-      if (key && existing.active === true && existing.hwid === deviceId && ACCESS_RE.test(String(existing.accessToken || ''))) {
+      // Mientras exista una key activa, o un ciclo pendiente de 15 minutos,
+      // siempre devolvemos el mismo enlace. Esto evita duplicados por spam de clicks.
+      if ((currentKey || existingPending) && existingPending) {
+        const expiresAt = currentKey ? currentKey.expiresAt : existingExpiry;
+        const patch = currentKey && Number(existing.expiresAt || 0) !== currentKey.expiresAt
+          ? { expiresAt: currentKey.expiresAt, key: currentKey.key, updatedAt: now }
+          : null;
+        if (patch) await accessRef.update(patch);
         return json(res, 200, {
           active: true,
+          pendingKey: !currentKey,
           hwid: deviceId,
-          accessToken: String(existing.accessToken),
-          url: `https://zkeysystem.vercel.app/?hwid=${encodeURIComponent(deviceId)}&access=${encodeURIComponent(existing.accessToken)}`,
-          expiresAt: key.expiresAt,
+          accessToken: existingToken,
+          url: accessUrl(deviceId, existingToken),
+          expiresAt,
           existing: true
         });
       }
 
-      // Si la key anterior expiró, activeKeyFor() ya limpió key/keyOwner.
-      // Se crea un token nuevo para que el enlace anterior quede muerto.
+      // Si la key anterior expiró, activeKeyFor() ya la limpió. El token viejo
+      // no se reutiliza: al reemplazar el registro, el URL anterior queda muerto.
       const accessToken = crypto.randomBytes(32).toString('hex');
-      const now = Date.now();
-      await accessRef.set({
+      const record = {
         active: true,
         hwid: deviceId,
         accessToken,
         accessHash: accessHash(accessToken),
+        key: currentKey?.key || null,
         activatedAt: now,
-        updatedAt: now
+        updatedAt: now,
+        expiresAt: currentKey?.expiresAt || now + PENDING_TTL
+      };
+
+      // Firebase transaction makes the "one active URL per HWID" rule atomic.
+      const tx = await accessRef.transaction(current => {
+        const v = current || {};
+        const token = String(v.accessToken || '');
+        const exp = Number(v.expiresAt || 0);
+        const active = v.active === true && String(v.hwid || '').toUpperCase() === deviceId && ACCESS_RE.test(token) && (!exp || exp > now);
+        if (active) return v;
+        return record;
       });
 
+      const final = tx.snapshot?.val ? (tx.snapshot.val() || {}) : record;
+      const finalToken = String(final.accessToken || accessToken);
+      const finalExpiry = Number(final.expiresAt || record.expiresAt);
+      const finalKey = currentKey || (KEY_RE.test(String(final.key || '')) && finalExpiry > now ? { key: String(final.key), expiresAt: finalExpiry } : null);
       return json(res, 200, {
         active: true,
+        pendingKey: !finalKey,
         hwid: deviceId,
-        accessToken,
-        url: `https://zkeysystem.vercel.app/?hwid=${encodeURIComponent(deviceId)}&access=${encodeURIComponent(accessToken)}`,
-        existing: false
+        accessToken: finalToken,
+        url: accessUrl(deviceId, finalToken),
+        ...(finalKey ? { expiresAt: finalKey.expiresAt } : {}),
+        existing: tx.committed === false || finalToken !== accessToken
       });
     }
 
@@ -193,20 +227,35 @@ module.exports = async (req, res) => {
     const storedToken = String(access.accessToken || '');
     const validToken = storedToken === accessToken && accessHash(accessToken) === String(access.accessHash || '');
 
-    // El enlace de lanzamiento debe poder abrirse ANTES de que exista una key.
-    // La key se crea después de completar el flujo de anuncios + Turnstile.
     if (access.active !== true || String(access.hwid || '').toUpperCase() !== deviceId || !validToken) {
       return json(res, 403, { allowed: false, reason: 'link_inactive' });
     }
 
+    const accessExpiresAt = Number(access.expiresAt || 0);
+    if (accessExpiresAt && accessExpiresAt <= Date.now()) {
+      await accessRef.update({ active: false, status: 'expired', expiredAt: Date.now(), revokedAt: Date.now() });
+      return json(res, 410, { allowed: false, reason: 'link_expired' });
+    }
+
     const key = await activeKeyFor(database, deviceId);
 
-    // Sin key todavía: el enlace es válido y el frontend puede iniciar el proceso.
     if (!key) {
+      // Antes de tener key, el token solo dura lo necesario para completar
+      // el ciclo de anuncios + Turnstile.
       return json(res, 200, { allowed: true, hwid: deviceId, pendingKey: true });
     }
 
-    return json(res, 200, { allowed: true, expiresAt: key.expiresAt });
+    if (key.expiresAt <= Date.now()) {
+      await accessRef.update({ active: false, status: 'expired', expiredAt: Date.now(), revokedAt: Date.now() });
+      return json(res, 410, { allowed: false, reason: 'link_expired' });
+    }
+
+    // La key es la fuente de verdad para la expiración del enlace.
+    if (accessExpiresAt !== key.expiresAt || String(access.key || '') !== key.key) {
+      await accessRef.update({ expiresAt: key.expiresAt, key: key.key, updatedAt: Date.now() });
+    }
+
+    return json(res, 200, { allowed: true, expiresAt: key.expiresAt, key: key.key });
   } catch (e) {
     console.error('link/access:', e);
     return json(res, 500, { error: e?.message || 'Error interno del servidor.' });
