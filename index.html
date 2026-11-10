@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#090b10">
+  <title>Key Control Premium — Panel de claves</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
+  <div class="layout">
+    <aside class="sidebar">
+      <a class="brand" href="#top" aria-label="Key Control inicio"><span class="brand-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 3a6.5 6.5 0 0 0-5.8 9.45L3 18.17V22h3.83l1.5-1.5V18h2.5v-2.5h2.5l1.3-1.3A6.5 6.5 0 1 0 14.5 3Zm3 6.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/></svg></span><span><b>KEY<span>CONTROL</span></b><small>ACCESS CONSOLE</small></span></a>
+      <div class="side-label">ESPACIO DE TRABAJO</div>
+      <nav class="nav"><a class="nav-item active" href="#dashboard"><span class="nav-icon">◫</span> Panel <span class="nav-pip"></span></a><a class="nav-item" href="#keys"><span class="nav-icon">⌘</span> Todas las keys <span class="nav-count" id="nav-count">0</span></a></nav>
+      <div class="sidebar-bottom"><div class="storage-card"><span class="storage-dot"></span><div><b>Base central</b><small>Firebase Realtime DB</small></div></div><p class="side-foot">KEY CONTROL <span>·</span> v2.0</p></div>
+    </aside>
+
+    <main id="top" class="main">
+      <header class="topbar"><div class="crumb"><span>Workspace</span><i>/</i><b>Panel</b></div><div class="top-actions"><span id="api-status" class="live-pill"><span></span> CONECTANDO</span><button id="admin-auth" class="auth-button">⌑ <span>Conectar</span></button><div class="avatar">KC</div></div></header>
+      <section id="dashboard" class="intro"><div><p class="eyebrow"><span class="eyebrow-line"></span> CENTRO DE CONTROL</p><h1>Tu acceso,<br><span>bajo control.</span></h1><p class="intro-copy">Genera claves temporales y administra su vigencia desde un solo lugar.</p></div><div class="date-chip"><span class="date-icon">◷</span><span id="today-label">—</span></div></section>
+
+      <section class="stats" aria-label="Resumen de claves">
+        <article class="stat-card"><div class="stat-top"><span>TOTAL GENERADAS</span><span class="stat-icon violet">⌘</span></div><div id="stat-total" class="stat-value">0</div><div class="stat-bottom"><span class="stat-mark">↗</span> claves en Firebase</div><div class="stat-glow violet-glow"></div></article>
+        <article class="stat-card"><div class="stat-top"><span>ACTIVAS AHORA</span><span class="stat-icon green">●</span></div><div id="stat-active" class="stat-value">0</div><div class="stat-bottom"><span class="status-dot"></span> activas y sin vencer</div><div class="stat-glow green-glow"></div></article>
+        <article class="stat-card"><div class="stat-top"><span>POR EXPIRAR</span><span class="stat-icon amber">◷</span></div><div id="stat-soon" class="stat-value">0</div><div class="stat-bottom">próximas 24 horas</div><div class="stat-glow amber-glow"></div></article>
+      </section>
+
+      <section class="content-grid">
+        <article class="panel generate-panel"><div class="panel-heading"><div><p class="eyebrow">EMISIÓN</p><h2>Crear nueva key</h2></div><span class="heading-orb">✳</span></div><p class="panel-desc">Elige una duración o ajusta el tiempo a tu medida.</p>
+          <div class="field-label">DURACIÓN RÁPIDA</div><div class="presets" id="presets"><button class="preset" data-seconds="3600"><b>1</b><span>hora</span></button><button class="preset" data-seconds="7200"><b>2</b><span>horas</span></button><button class="preset" data-seconds="21600"><b>6</b><span>horas</span></button><button class="preset" data-seconds="86400"><b>1</b><span>día</span></button><button class="preset" data-seconds="604800"><b>7</b><span>días</span></button><button class="preset" data-seconds="31536000"><b>1</b><span>año</span></button></div>
+          <div class="field-label custom-label">O PERSONALIZA EL TIEMPO <span>Máximo 1 año</span></div><div class="duration-fields"><label><span>DIAS</span><input id="days" type="number" min="0" max="365" value="0" inputmode="numeric"></label><label><span>HORAS</span><input id="hours" type="number" min="0" max="23" value="1" inputmode="numeric"></label><label><span>MIN</span><input id="minutes" type="number" min="0" max="59" value="0" inputmode="numeric"></label><label><span>SEG</span><input id="seconds" type="number" min="0" max="59" value="0" inputmode="numeric"></label></div>
+          <div class="duration-readout"><span class="readout-icon">◷</span><span>Vigencia seleccionada</span><b id="duration-preview">1 hora</b></div>
+          <button id="generate" class="primary-btn"><span>Generar clave</span><span class="btn-arrow">↗</span></button><p class="secure-note"><span>✦</span> Clave aleatoria única · se elimina al expirar</p>
+        </article>
+
+        <article class="panel latest-panel"><div class="panel-heading"><div><p class="eyebrow">ACTIVIDAD RECIENTE</p><h2>Última key</h2></div><span class="latest-label"><span></span> EN VIVO</span></div><div id="latest-content" class="latest-empty"><div class="empty-art"><span>⌘</span><i></i></div><h3>Todo listo para empezar</h3><p>Tu próxima clave aparecerá<br>aquí cuando la generes.</p></div></article>
+      </section>
+
+      <section id="keys" class="keys-section"><div class="section-head"><div><p class="eyebrow">GESTIÓN</p><h2>Tus claves <span id="key-count-label">(0)</span></h2></div><div class="table-actions"><label class="search"><span>⌕</span><input id="search" type="search" placeholder="Buscar key..." autocomplete="off"></label><select id="filter" aria-label="Filtrar claves"><option value="all">Todas</option><option value="active">Activas</option></select></div></div>
+        <div class="table-wrap"><table><thead><tr><th>CLAVE</th><th>CREADA</th><th>DURACIÓN</th><th>EXPIRA</th><th>VINCULACIÓN HWID</th><th></th></tr></thead><tbody id="keys-body"></tbody></table><div id="table-empty" class="table-empty"><span>⌘</span><b>Conecta el panel</b><small>Usa tu llave de administración para cargar las keys.</small></div></div>
+      </section>
+      <footer class="footer"><span>KEY CONTROL <i>·</i> Emisión con vigencia centralizada.</span><span><b class="footer-dot"></b> El vencimiento elimina la key del servidor</span></footer>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="auth-modal" class="modal" aria-hidden="true"><div class="modal-backdrop" data-auth-close></div><div class="modal-card"><button class="modal-close" data-auth-close aria-label="Cerrar">×</button><span class="modal-check">⌑</span><p class="eyebrow">ACCESO ADMIN</p><h2>Conecta tu panel.</h2><p class="modal-copy">Usa ADMIN_API_SECRET configurado en el servidor. La llave se conserva solo durante esta sesión.</p><label class="secret-field"><span>LLAVE DE ADMINISTRACIÓN</span><input id="admin-secret" type="password" autocomplete="current-password" placeholder="Pega tu ADMIN_API_SECRET"></label><button id="auth-submit" class="primary-btn">Conectar <span class="btn-arrow">→</span></button></div></div>
+  <div id="modal" class="modal" aria-hidden="true"><div class="modal-backdrop" data-close></div><div class="modal-card"><button class="modal-close" data-close aria-label="Cerrar">×</button><span class="modal-check">✓</span><p class="eyebrow">KEY PREMIUM GENERADA</p><h2>Lista para usar.</h2><p class="modal-copy">Guarda esta key. Se vinculará al primer HWID que la valide.</p><div class="modal-key"><code id="new-key-value"></code><button id="copy-new" aria-label="Copiar key">▢</button></div><div class="modal-expiry"><span>Expira</span><b id="new-key-expiry"></b></div><button id="modal-done" class="primary-btn">Entendido <span class="btn-arrow">→</span></button></div></div>
+</body>
+</html>
